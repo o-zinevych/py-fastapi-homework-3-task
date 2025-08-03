@@ -61,11 +61,12 @@ async def register_user(
 
         new_user = UserModel(email=email, group=group)
         new_user.password = user_data.password
+        db.add(new_user)
+        await db.commit()
+        await db.refresh(new_user)
 
         activation_token = ActivationTokenModel(user_id=new_user.id)
-        new_user.activation_token = activation_token
-
-        db.add(new_user)
+        db.add(activation_token)
         await db.commit()
         await db.refresh(new_user)
         return new_user
