@@ -26,13 +26,17 @@ from schemas import (
     UserActivationRequestSchema,
     PasswordResetRequestSchema,
     PasswordResetCompleteRequestSchema,
+    UserLoginResponseSchema,
+    UserLoginRequestSchema,
 )
 from security.interfaces import JWTAuthManagerInterface
 
 router = APIRouter()
 
 
-async def get_user_by_email(email: str, db: AsyncSession = Depends(get_db)):
+async def get_user_by_email(
+    email: str, db: AsyncSession = Depends(get_db)
+) -> UserModel:
     result = await db.execute(select(UserModel).where(UserModel.email == email))
     user = result.scalar_one_or_none()
     return user
@@ -175,3 +179,32 @@ async def reset_password(
             status_code=500, detail="An error occurred while resetting the password."
         )
     return {"message": "Password reset successfully."}
+
+
+@router.post("/login/", status_code=201, response_model=UserLoginResponseSchema)
+async def login(user_data: UserLoginRequestSchema, db: AsyncSession = Depends(get_db)):
+    email = cast(str, user_data.email)
+    db_user = await get_user_by_email(email, db)
+    if not db_user or not db_user.verify_password(user_data.password):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if not db_user.is_active:
+        raise HTTPException(status_code=403, detail="User account is not activated.")
+
+    settings = get_settings()
+    jwt_manager = get_jwt_auth_manager(settings)
+    try:
+        data = {"sub": email, "user_id": db_user.id}
+        access_token = jwt_manager.create_access_token(data)
+        refresh_token = jwt_manager.create_refresh_token(data)
+        db_refresh_token = RefreshTokenModel.create(
+            user_id=db_user.id, days_valid=1, token=refresh_token
+        )
+        db.add(db_refresh_token)
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500, detail="An error occurred while processing the request."
+        )
+
+    return {"access_token": access_token, "refresh_token": refresh_token}
