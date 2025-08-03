@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import cast
 
 from fastapi import APIRouter, Depends, status, HTTPException
+from jose import ExpiredSignatureError
 from passlib.context import CryptContext
 from sqlalchemy import select, delete
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,7 +19,7 @@ from database import (
     PasswordResetTokenModel,
     RefreshTokenModel,
 )
-from exceptions import BaseSecurityError
+from exceptions import BaseSecurityError, TokenExpiredError, InvalidTokenError
 from schemas import (
     UserRegistrationResponseSchema,
     UserRegistrationRequestSchema,
@@ -28,6 +29,8 @@ from schemas import (
     PasswordResetCompleteRequestSchema,
     UserLoginResponseSchema,
     UserLoginRequestSchema,
+    TokenRefreshResponseSchema,
+    TokenRefreshRequestSchema,
 )
 from security.interfaces import JWTAuthManagerInterface
 
@@ -208,3 +211,37 @@ async def login(user_data: UserLoginRequestSchema, db: AsyncSession = Depends(ge
         )
 
     return {"access_token": access_token, "refresh_token": refresh_token}
+
+
+@router.post("/refresh/", response_model=TokenRefreshResponseSchema)
+async def refresh_access_token(
+    request: TokenRefreshRequestSchema, db: AsyncSession = Depends(get_db)
+):
+    settings = get_settings()
+    jwt_manager = get_jwt_auth_manager(settings)
+    try:
+        payload = jwt_manager.decode_refresh_token(request.refresh_token)
+        print(payload)
+    except (TokenExpiredError, InvalidTokenError):
+        raise HTTPException(status_code=400, detail="Token has expired.")
+
+    result = await db.execute(
+        select(RefreshTokenModel).where(
+            RefreshTokenModel.token == request.refresh_token
+        )
+    )
+    db_token = result.scalar_one_or_none()
+    if not db_token:
+        raise HTTPException(status_code=401, detail="Refresh token not found.")
+
+    result = await db.execute(
+        select(UserModel).where(UserModel.id == payload["user_id"])
+    )
+    db_user = result.scalar_one_or_none()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    new_access_token = jwt_manager.create_access_token(
+        {"sub": db_user.email, "user_id": db_user.id}
+    )
+    return {"access_token": new_access_token}
