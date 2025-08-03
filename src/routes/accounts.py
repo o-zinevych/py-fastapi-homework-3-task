@@ -25,6 +25,7 @@ from schemas import (
     MessageResponseSchema,
     UserActivationRequestSchema,
     PasswordResetRequestSchema,
+    PasswordResetCompleteRequestSchema,
 )
 from security.interfaces import JWTAuthManagerInterface
 
@@ -66,7 +67,7 @@ async def register_user(
         await db.commit()
         await db.refresh(new_user)
         return new_user
-    except Exception:
+    except SQLAlchemyError:
         await db.rollback()
         raise HTTPException(
             status_code=500, detail="An error occurred during user creation."
@@ -128,4 +129,49 @@ async def request_password_reset(
         db.add(new_pwd_reset_token)
         await db.commit()
 
-    return {"message": "If you are registered, you will receive an email with instructions."}
+    return {
+        "message": "If you are registered, you will receive an email with instructions."
+    }
+
+
+@router.post("/reset-password/complete/", response_model=MessageResponseSchema)
+async def reset_password(
+    reset_data: PasswordResetCompleteRequestSchema, db: AsyncSession = Depends(get_db)
+):
+    email = cast(str, reset_data.email)
+    db_user = await get_user_by_email(email, db)
+    bad_request_message = "Invalid email or token."
+    if not db_user or not db_user.is_active:
+        raise HTTPException(status_code=400, detail=bad_request_message)
+
+    result = await db.execute(
+        select(PasswordResetTokenModel).where(
+            PasswordResetTokenModel.token == reset_data.token
+        )
+    )
+    db_token = result.scalar_one_or_none()
+    if db_token:
+        expires_at = cast(datetime, db_token.expires_at).replace(tzinfo=timezone.utc)
+
+    if not db_token or expires_at < datetime.now(timezone.utc):
+        await db.execute(
+            delete(PasswordResetTokenModel).where(
+                PasswordResetTokenModel.user == db_user
+            )
+        )
+        await db.commit()
+        raise HTTPException(status_code=400, detail=bad_request_message)
+
+    if db_token.user != db_user:
+        raise HTTPException(status_code=400, detail=bad_request_message)
+
+    try:
+        db_user.password = reset_data.password
+        db.add(db_user)
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500, detail="An error occurred while resetting the password."
+        )
+    return {"message": "Password reset successfully."}
