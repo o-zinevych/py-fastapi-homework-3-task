@@ -1,25 +1,21 @@
 from datetime import datetime, timezone
 from typing import cast
 
-from fastapi import APIRouter, Depends, status, HTTPException
-from jose import ExpiredSignatureError
-from passlib.context import CryptContext
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, delete
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session, joinedload
 
-from config import get_jwt_auth_manager, get_settings, BaseAppSettings
+from config import get_jwt_auth_manager, get_settings
 from database import (
     get_db,
     UserModel,
     UserGroupModel,
-    UserGroupEnum,
     ActivationTokenModel,
     PasswordResetTokenModel,
     RefreshTokenModel,
 )
-from exceptions import BaseSecurityError, TokenExpiredError, InvalidTokenError
+from exceptions import TokenExpiredError, InvalidTokenError
 from schemas import (
     UserRegistrationResponseSchema,
     UserRegistrationRequestSchema,
@@ -32,7 +28,6 @@ from schemas import (
     TokenRefreshResponseSchema,
     TokenRefreshRequestSchema,
 )
-from security.interfaces import JWTAuthManagerInterface
 
 router = APIRouter()
 
@@ -96,13 +91,12 @@ async def activate_user(
         )
     )
     db_token = result.scalar_one_or_none()
-    if db_token:
-        expires_at = cast(datetime, db_token.expires_at).replace(tzinfo=timezone.utc)
-    if (
-        not db_token
-        or db_token.user != db_user
-        or expires_at < datetime.now(timezone.utc)
-    ):
+    if not db_token:
+        raise HTTPException(
+            status_code=400, detail="Invalid or expired activation token."
+        )
+    expires_at = cast(datetime, db_token.expires_at).replace(tzinfo=timezone.utc)
+    if db_token.user != db_user or expires_at < datetime.now(timezone.utc):
         raise HTTPException(
             status_code=400, detail="Invalid or expired activation token."
         )
@@ -157,10 +151,17 @@ async def reset_password(
         )
     )
     db_token = result.scalar_one_or_none()
-    if db_token:
-        expires_at = cast(datetime, db_token.expires_at).replace(tzinfo=timezone.utc)
+    if not db_token:
+        await db.execute(
+            delete(PasswordResetTokenModel).where(
+                PasswordResetTokenModel.user == db_user
+            )
+        )
+        await db.commit()
+        raise HTTPException(status_code=400, detail=bad_request_message)
+    expires_at = cast(datetime, db_token.expires_at).replace(tzinfo=timezone.utc)
 
-    if not db_token or expires_at < datetime.now(timezone.utc):
+    if expires_at < datetime.now(timezone.utc):
         await db.execute(
             delete(PasswordResetTokenModel).where(
                 PasswordResetTokenModel.user == db_user
