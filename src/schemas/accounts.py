@@ -6,7 +6,7 @@ from database import accounts_validators, UserGroupEnum
 class UserRegistrationRequestSchema(BaseModel):
     email: EmailStr
     password: str
-    role: UserGroupEnum = UserGroupEnum.USER
+    group: UserGroupEnum = UserGroupEnum.USER
 
     @field_validator("email")
     @classmethod
