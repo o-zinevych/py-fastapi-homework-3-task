@@ -19,18 +19,49 @@ from database import (
     RefreshTokenModel,
 )
 from exceptions import BaseSecurityError
+from schemas import UserRegistrationResponseSchema, UserRegistrationRequestSchema
 from security.interfaces import JWTAuthManagerInterface
 
 router = APIRouter()
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
 
 
 async def get_user_by_email(email: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(UserModel).where(UserModel.email == email))
     user = result.scalar_one_or_none()
     return user
+
+
+@router.post(
+    "/register/", status_code=201, response_model=UserRegistrationResponseSchema
+)
+async def register_user(
+    user_data: UserRegistrationRequestSchema, db: AsyncSession = Depends(get_db)
+):
+    email = cast(str, user_data.email)
+    db_user = await get_user_by_email(email, db)
+    if db_user:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A user with this email {user_data.email} already exists.",
+        )
+    try:
+        group_result = await db.execute(
+            select(UserGroupModel).where(UserGroupModel.name == user_data.group)
+        )
+        group = group_result.scalar_one_or_none()
+
+        new_user = UserModel(email=email, group=group)
+        new_user.password = user_data.password
+
+        activation_token = ActivationTokenModel(user_id=new_user.id)
+        new_user.activation_token = activation_token
+
+        db.add(new_user)
+        await db.commit()
+        await db.refresh(new_user)
+        return new_user
+    except Exception:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500, detail="An error occurred during user creation."
+        )
