@@ -23,3 +23,12 @@ class UserRegistrationResponseSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     email: EmailStr
+
+
+class UserActivationRequestSchema(BaseModel):
+    email: EmailStr
+    token: str
+
+
+class MessageResponseSchema(BaseModel):
+    message: str
